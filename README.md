@@ -29,7 +29,7 @@ The baseline pipeline will run, but key functionality—particularly around vali
 - Single SQLite table with gaming and mental health survey data
 - Public tests and benchmark script
 - OpenRouter integration via [OpenRouter Python SDK](https://pypi.org/project/openrouter/)
-- Configurable model (default: `openai/gpt-5-nano`, override via `OPENROUTER_MODEL`)
+- **Free-tier only**: default model is `openai/gpt-oss-120b:free`; alternate `openai/gpt-oss-20b:free`; override via `OPENROUTER_MODEL`
 
 ## Assignment Tasks
 
@@ -80,9 +80,11 @@ python3 scripts/gaming_csv_to_db.py
 python3 -m unittest discover -s tests -p "test_public.py"
 ```
 
+Ensure the CSV in `data/` is the real dataset (with header and 39 columns). After `gaming_csv_to_db.py`, the SQLite file in `data/` must be valid (script replaces invalid/corrupt DB when using `--if-exists replace` or when it detects "not a database"). Then set `OPENROUTER_API_KEY` (see below) so the public tests can run.
+
 ### OpenRouter Setup
 
-This project uses [OpenRouter](https://openrouter.ai/) to access LLMs for SQL generation and answer synthesis. OpenRouter provides a unified API for many models across providers. It offers a **free tier** that lets you use certain models at no cost, which is sufficient for this assignment.
+This project uses [OpenRouter](https://openrouter.ai/) only: **OPENROUTER_API_KEY** for auth and a single **shared model** (from `OPENROUTER_MODEL` or the default) for all SQL and answer generation. OpenRouter offers a **free tier** that lets you use certain models at no cost, which is sufficient for this assignment.
 
 All environment variables are loaded from a **`.env`** file in the project root. The pipeline, scripts, and tests load this file automatically.
 
@@ -97,7 +99,7 @@ cp .env.example .env
 # Edit .env and set OPENROUTER_API_KEY=<your_key>
 ```
 
-Optional: set `OPENROUTER_MODEL` in `.env` to override the default model. See `.env.example` for all supported variables. If `test_answerable_prompt_returns_sql_and_answer` fails (model returns no parseable SQL), try a different model that returns plain text in the API `content` field.
+Optional: set `OPENROUTER_MODEL` in `.env` to override the default. Default is **`openrouter/free`** (OpenRouter's free-tier router). You can use a specific free model instead, e.g. `openai/gpt-oss-120b:free` or `openai/gpt-oss-20b:free`. If the benchmark shows 0% success and "No SQL provided", run with `--verbose` to see the **llm_error** (e.g. auth or model not found); try removing `OPENROUTER_MODEL` to use `openrouter/free`, or fix the API key.
 
 ## Benchmark
 Run:
@@ -106,9 +108,22 @@ Run:
 python3 scripts/benchmark.py --runs 3
 ```
 
-This prints baseline-style latency stats (`avg`, `p50`, `p95`) and success rate.
+Use `--verbose` to see per-prompt failure reasons (validation vs execution errors):
 
-**Reference metrics** (baseline on reference hardware): avg ~2900ms, p50 ~2500ms, p95 ~4700ms, ~600 tokens/request. 
+```bash
+python3 scripts/benchmark.py --runs 3 --verbose
+```
+
+This prints baseline-style latency stats (`avg`, `p50`, `p95`), success rate, and token/LLM-call stats.
+
+**Reference metrics** (baseline on reference hardware): avg ~2900ms, p50 ~2500ms, p95 ~4700ms, ~600 tokens/request.
+
+### Troubleshooting 0% success / "No SQL provided"
+
+- Run with **`--verbose`** to see **`llm_error`** for each failure.
+- **"No endpoints available matching your guardrail restrictions and data policy"** → OpenRouter is blocking requests due to your account’s privacy/guardrail settings. Go to [OpenRouter Privacy / Data policy](https://openrouter.ai/settings/privacy) and allow the models you use (e.g. enable the options needed for `openrouter/free` or your chosen free model).
+- **"Rate limit exceeded"** / **"limited to 8 requests per minute"** → Free models (e.g. `qwen/qwen3-coder:free`) have strict rate limits. Use **`--delay 8`** to wait 8 seconds between prompts: `python3 scripts/benchmark.py --runs 1 --delay 8 --verbose`. The LLM client auto-retries after 10s when rate limited.
+- Invalid API key or wrong model → fix `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` in `.env`. Use the **API model ID** (e.g. `qwen/qwen3-coder:free`), not the display name.
 
 ## Deliverables
 1. Updated source code

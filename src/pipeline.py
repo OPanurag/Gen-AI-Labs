@@ -104,6 +104,59 @@ class SQLValidator:
         )
 
 
+def _strip_incomplete_sql_trailer(sql: str) -> str:
+    """Remove trailing incomplete clauses to avoid SQLite 'incomplete input'."""
+    sql = sql.strip()
+    # Fix unclosed single quote (SQLite treats as incomplete)
+    if sql.count("'") % 2 == 1:
+        last_quote = sql.rfind("'")
+        if last_quote > 0:
+            sql = sql[:last_quote].strip()
+    incomplete_suffixes = (
+        r"\s+ORDER\s+BY\s*$",
+        r"\s+GROUP\s+BY\s*$",
+        r"\s+HAVING\s*$",
+        r"\s+WHERE\s*$",
+        r"\s+AND\s*$",
+        r"\s+OR\s*$",
+        r"\s+LIMIT\s*$",
+        r"\s+OFFSET\s*$",
+        r"\s*,\s*$",
+        r"\s+\(\s*$",
+    )
+    prev = ""
+    while prev != sql:
+        prev = sql
+        sql = sql.strip()
+        for pat in incomplete_suffixes:
+            sql = re.sub(pat, "", sql, flags=re.IGNORECASE).strip()
+    return sql
+
+
+def _execute_sql_with_incomplete_retry(conn: sqlite3.Connection, sql: str, max_retries: int = 5) -> tuple[list[dict], str | None]:
+    """Execute SQL; on 'incomplete input', strip trailing tokens and retry. Returns (rows, error)."""
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    for _ in range(max_retries + 1):
+        try:
+            cur.execute(sql)
+            rows = [dict(r) for r in cur.fetchmany(100)]
+            return (rows, None)
+        except sqlite3.OperationalError as e:
+            err = str(e).lower()
+            if "incomplete input" in err or "unclosed" in err:
+                # Strip last token and retry
+                parts = sql.strip().rsplit(maxsplit=1)
+                if len(parts) < 2:
+                    return ([], str(e))
+                sql = parts[0].strip()
+                if not sql.upper().startswith("SELECT"):
+                    return ([], str(e))
+            else:
+                return ([], str(e))
+    return ([], "incomplete input after retries")
+
+
 class SQLiteExecutor:
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self.db_path = Path(db_path)
@@ -122,12 +175,14 @@ class SQLiteExecutor:
                 error=None,
             )
 
+        sql = _strip_incomplete_sql_trailer(sql)
+
         try:
             with sqlite3.connect(self.db_path) as conn:
-                conn.row_factory = sqlite3.Row
-                cur = conn.cursor()
-                cur.execute(sql)
-                rows = [dict(r) for r in cur.fetchmany(100)]
+                rows, exec_error = _execute_sql_with_incomplete_retry(conn, sql)
+                if exec_error:
+                    error = exec_error
+                    rows = []
                 row_count = len(rows)
         except Exception as exc:
             error = str(exc)
@@ -143,7 +198,11 @@ class SQLiteExecutor:
 
 
 class AnalyticsPipeline:
-    def __init__(self, db_path: str | Path = DEFAULT_DB_PATH, llm_client: OpenRouterLLMClient | None = None) -> None:
+    def __init__(
+        self,
+        db_path: str | Path = DEFAULT_DB_PATH,
+        llm_client: OpenRouterLLMClient | None = None,
+    ) -> None:
         self.db_path = Path(db_path)
         self.llm = llm_client or build_default_llm_client()
         self.executor = SQLiteExecutor(self.db_path)

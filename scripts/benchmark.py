@@ -4,6 +4,7 @@ import argparse
 import json
 import statistics
 import sys
+import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +61,13 @@ def main() -> None:
         action="store_true",
         help="Print per-prompt status and first few failure reasons.",
     )
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=0,
+        metavar="SECS",
+        help="Wait SECS seconds between each prompt (for rate-limited free models, e.g. 8 for 8 req/min).",
+    )
     args = parser.parse_args()
 
     db_path = _ensure_gaming_db()
@@ -74,10 +82,12 @@ def main() -> None:
     llm_calls_list: list[int] = []
     success = 0
     count = 0
-    verbose_errors: list[tuple[str, str, str | None, str | None]] = []  # prompt, status, val_err, exec_err
+    verbose_errors: list[tuple[str, str, str | None, str | None, str | None]] = []  # prompt, status, val_err, exec_err, llm_err
 
     for run in range(args.runs):
         for prompt in prompts:
+            if args.delay > 0 and count > 0:
+                time.sleep(args.delay)
             result = pipeline.run(prompt)
             totals.append(result.timings["total_ms"])
             token_totals.append(result.total_llm_stats.get("total_tokens", 0) or 0)
@@ -87,7 +97,8 @@ def main() -> None:
             if args.verbose and result.status != "success":
                 v_err = result.sql_validation.error if not result.sql_validation.is_valid else None
                 e_err = result.sql_execution.error
-                verbose_errors.append((prompt[:70], result.status, v_err, e_err))
+                llm_err = getattr(result.sql_generation, "error", None) if result.sql_generation else None
+                verbose_errors.append((prompt[:70], result.status, v_err, e_err, llm_err))
 
     summary = {
         "runs": args.runs,
@@ -103,8 +114,10 @@ def main() -> None:
 
     if args.verbose and verbose_errors:
         print("\n--- Failure breakdown (first 15) ---")
-        for i, (prompt, status, v_err, e_err) in enumerate(verbose_errors[:15]):
+        for i, (prompt, status, v_err, e_err, llm_err) in enumerate(verbose_errors[:15]):
             print(f"\n{i + 1}. [{status}] {prompt!r}")
+            if llm_err:
+                print(f"   llm_error: {llm_err[:300]}")
             if v_err:
                 print(f"   validation: {v_err[:200]}")
             if e_err:

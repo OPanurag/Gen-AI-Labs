@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import time
 from typing import Any
+
+# Seconds to wait before retry when OpenRouter returns rate limit (e.g. 8 req/min for free models).
+RATE_LIMIT_RETRY_DELAY = 10
+RATE_LIMIT_MAX_RETRIES = 2
 
 from src.types import (
     AnswerGenerationOutput,
@@ -11,7 +17,30 @@ from src.types import (
     SQLGenerationOutput,
 )
 
-DEFAULT_MODEL = "openai/gpt-5-nano"
+# Single shared model for all OpenRouter requests (override via OPENROUTER_MODEL in .env).
+# openrouter/free = OpenRouter's free-tier router (auto-selects a working free model).
+DEFAULT_MODEL = "openrouter/free"
+
+logger = logging.getLogger(__name__)
+
+
+def _extract_openrouter_error_message(exc: Exception) -> str | None:
+    """When the OpenRouter SDK raises a validation error (API returned error body), extract the API message."""
+    s = str(exc)
+    if "input_value=" not in s or "'error'" not in s and '"error"' not in s:
+        return None
+    # Try to extract error.message from repr: input_value={'error': {'message': '...', 'code': 400}}
+    for pattern in (
+        r"['\"]message['\"]\s*:\s*['\"]([^'\"]+)['\"]",
+        r"['\"]message['\"]\s*:\s*['\"]([^'\"]*(?:\\.[^'\"]*)*)['\"]",
+    ):
+        m = re.search(pattern, s)
+        if m:
+            msg = m.group(1).replace("\\'", "'").replace('\\"', '"')
+            if msg:
+                return f"OpenRouter API error: {msg}"
+    return None
+
 
 # Full schema so the LLM uses only real columns (reduces "no such column" / invalid_sql).
 SCHEMA_HINT = (
@@ -37,18 +66,39 @@ class OpenRouterLLMClient:
             from openrouter import OpenRouter
         except ModuleNotFoundError as exc:
             raise RuntimeError("Missing dependency: install 'openrouter'.") from exc
-        self.model = model or os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
+        _env_model = (os.getenv("OPENROUTER_MODEL") or "").strip()
+        self.model = model or _env_model or DEFAULT_MODEL
         self._client = OpenRouter(api_key=api_key)
         self._stats = {"llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     def _chat(self, messages: list[dict[str, str]], temperature: float, max_tokens: int) -> str:
-        res = self._client.chat.send(
-            messages=messages,
-            model=self.model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=False,
-        )
+        last_exc = None
+        for attempt in range(RATE_LIMIT_MAX_RETRIES + 1):
+            try:
+                res = self._client.chat.send(
+                    messages=messages,
+                    model=self.model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=False,
+                )
+                break
+            except Exception as exc:
+                last_exc = exc
+                err_str = str(exc).lower()
+                if attempt < RATE_LIMIT_MAX_RETRIES and ("rate limit" in err_str or "limit_rpm" in err_str):
+                    logger.warning("Rate limited, retrying in %ss (attempt %d/%d)", RATE_LIMIT_RETRY_DELAY, attempt + 1, RATE_LIMIT_MAX_RETRIES + 1)
+                    time.sleep(RATE_LIMIT_RETRY_DELAY)
+                    continue
+                # OpenRouter SDK raises validation errors when API returns error body (e.g. 400)
+                api_msg = _extract_openrouter_error_message(exc)
+                if api_msg:
+                    raise RuntimeError(api_msg) from exc
+                raise
+        else:
+            if last_exc is not None:
+                raise last_exc
+            raise RuntimeError("No response from OpenRouter.")
 
         # Token counting from OpenRouter response (OpenAI-compatible usage object)
         self._stats["llm_calls"] = self._stats.get("llm_calls", 0) + 1
@@ -189,24 +239,14 @@ class OpenRouterLLMClient:
         match = _re.search(r"\bselect\b", raw, _re.IGNORECASE)
         if match:
             return _clean_segment(raw[match.start() :])
+        # Fallback: any line that starts with SELECT (model sometimes puts SQL on its own line)
+        for line in raw.split("\n"):
+            line = line.strip()
+            if line.upper().startswith("SELECT"):
+                out = _strip_trailing_prose(line)
+                if out and out.upper().startswith("SELECT"):
+                    return out
         return None
-
-    def _build_sql_prompt_with_conversation(
-        self, question: str, conversation: ConversationContext
-    ) -> str:
-        recent = conversation.recent_for_prompt(last_n=2)
-        if not recent:
-            return f"Question: {question}\n\nGenerate a SQL query to answer this question."
-        parts = ["Previous turn(s) for context:"]
-        for t in recent:
-            parts.append(t.to_summary(max_rows=5))
-        parts.append(f"\nNew question: {question}")
-        parts.append(
-            "\nGenerate a single SQLite SELECT query for the new question. "
-            "You may refine the previous query (e.g. add WHERE, change ORDER BY, filter to a subset) "
-            "or write a new query. Return only the SQL or a JSON object with a 'sql' key."
-        )
-        return "\n".join(parts)
 
     def generate_sql(self, question: str, context: dict) -> SQLGenerationOutput:
         # Short system prompt to reduce tokens and focus the model on one-line SQL
@@ -217,7 +257,7 @@ class OpenRouterLLMClient:
         )
         conversation = context.get("conversation")
         if isinstance(conversation, ConversationContext) and conversation.turns:
-            user_prompt = self._build_sql_prompt_with_conversation(question, conversation)
+            user_prompt = _build_sql_prompt_with_conversation(question, conversation)
         else:
             user_prompt = (
                 f"Schema: {SCHEMA_HINT}\n\nQuestion: {question}\n\n"
@@ -232,22 +272,23 @@ class OpenRouterLLMClient:
             text = self._chat(
                 messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                 temperature=0.0,
-                max_tokens=200,
+                max_tokens=280,
             )
             sql = self._extract_sql(text)
             if sql is None and not conversation:
                 strict_prompt = (
                     f"Schema: {SCHEMA_HINT}\n\nQuestion: {question}\n\n"
-                    "One line only: the SQLite SELECT query."
+                    "Output only one line: the SQLite SELECT query, nothing else."
                 )
                 text = self._chat(
-                    messages=[{"role": "system", "content": "Reply with only the SQL query, one line."}, {"role": "user", "content": strict_prompt}],
+                    messages=[{"role": "system", "content": "You output only a single line of SQL. No explanation."}, {"role": "user", "content": strict_prompt}],
                     temperature=0.0,
-                    max_tokens=200,
+                    max_tokens=280,
                 )
                 sql = self._extract_sql(text)
         except Exception as exc:
             error = str(exc)
+            logger.warning("SQL generation failed: %s", error, exc_info=False)
 
         timing_ms = (time.perf_counter() - start) * 1000
         llm_stats = self.pop_stats()
@@ -337,9 +378,28 @@ class OpenRouterLLMClient:
         return out
 
 
+def _build_sql_prompt_with_conversation(question: str, conversation: ConversationContext) -> str:
+    """Build user prompt for SQL generation when conversation context exists. Shared by both clients."""
+    recent = conversation.recent_for_prompt(last_n=2)
+    if not recent:
+        return f"Question: {question}\n\nGenerate a SQL query to answer this question."
+    parts = ["Previous turn(s) for context:"]
+    for t in recent:
+        parts.append(t.to_summary(max_rows=5))
+    parts.append(f"\nNew question: {question}")
+    parts.append(
+        "\nGenerate a single SQLite SELECT query for the new question. "
+        "You may refine the previous query (e.g. add WHERE, change ORDER BY, filter to a subset) "
+        "or write a new query. Return only the SQL or a JSON object with a 'sql' key."
+    )
+    return "\n".join(parts)
+
+
 def build_default_llm_client() -> OpenRouterLLMClient:
-    # OPENROUTER_* are loaded from project .env via src/__init__.py
+    """Build LLM client from env. Uses OPENROUTER_API_KEY only; model from OPENROUTER_MODEL or default (shared for all requests)."""
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY is required.")
+        raise RuntimeError(
+            "OPENROUTER_API_KEY is required. Get a key at https://openrouter.ai/"
+        )
     return OpenRouterLLMClient(api_key=api_key)
