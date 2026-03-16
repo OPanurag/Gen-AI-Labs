@@ -110,6 +110,12 @@ class OpenRouterLLMClient:
     def _extract_sql(text: str) -> str | None:
         import re as _re
         raw = text.strip()
+        # Fast path: single-line response starting with SELECT (model obeyed "one line only")
+        if raw and "\n" not in raw and raw.upper().startswith("SELECT"):
+            seg = raw.split(";")[0].strip()
+            if ". " in seg:
+                seg = seg.split(". ")[0].strip()
+            return seg or None
         # Try JSON with "sql" key first
         if raw.startswith("{") and raw.endswith("}"):
             try:
@@ -127,14 +133,21 @@ class OpenRouterLLMClient:
         ):
             match = pattern.search(raw)
             if match:
-                block = match.group(1).strip()
-                if "select " in block.lower():
-                    return block.strip()
+                block = match.group(1).strip().split(";")[0].strip()
+                if ". " in block:
+                    block = block.split(". ")[0].strip()
+                if block.upper().startswith("SELECT"):
+                    return block
+                sel = _re.search(r"\bSELECT\b", block, _re.IGNORECASE)
+                if sel:
+                    return block[sel.start() :].strip()
         def _clean_segment(segment: str) -> str | None:
             segment = segment.split(";")[0].strip()
             segment = segment.split("\n\n")[0].strip()
+            # Strip trailing prose: "SELECT ... . This gives us" -> "SELECT ..."
+            if ". " in segment:
+                segment = segment.split(". ")[0].strip()
             # Truncate at first dangerous keyword (whole word) so we never include it
-            # Truncate at statement-level keywords only (not REPLACE which is a function)
             danger_match = _re.search(
                 r"\b(DELETE|DROP|UPDATE|INSERT|ALTER|TRUNCATE|CREATE)\b",
                 segment,
@@ -149,7 +162,12 @@ class OpenRouterLLMClient:
                     break
                 safe_lines.append(line)
             segment = "\n".join(safe_lines).strip()
-            return segment if segment.upper().startswith("SELECT") else None
+            # Ensure we start with SELECT (skip leading prose like "The query is SELECT ...")
+            if segment and not segment.upper().startswith("SELECT"):
+                sel = _re.search(r"\bSELECT\b", segment, _re.IGNORECASE)
+                if sel:
+                    segment = segment[sel.start() :].strip()
+            return segment if segment and segment.upper().startswith("SELECT") else None
 
         lower = raw.lower()
         for needle in ("select ", "select\n", "select\t"):
@@ -181,17 +199,20 @@ class OpenRouterLLMClient:
         return "\n".join(parts)
 
     def generate_sql(self, question: str, context: dict) -> SQLGenerationOutput:
+        # Short system prompt to reduce tokens and focus the model on one-line SQL
         system_prompt = (
-            "You are a SQL assistant. "
-            "Generate SQLite SELECT queries from natural language questions. "
-            f"Schema: {SCHEMA_HINT} "
-            "Return only the SQL, or a JSON object with a 'sql' key, or SQL inside markdown code blocks."
+            "You are a SQL assistant. Reply with exactly one line: the SQLite SELECT query. "
+            "No explanation, no markdown, no code blocks. Use only the given schema. "
+            "Use = and numbers in SQL (e.g. addiction_level >= 3), not words like 'high' or 'is'."
         )
         conversation = context.get("conversation")
         if isinstance(conversation, ConversationContext) and conversation.turns:
             user_prompt = self._build_sql_prompt_with_conversation(question, conversation)
         else:
-            user_prompt = f"Context: {context}\n\nQuestion: {question}\n\nGenerate a SQL query to answer this question."
+            user_prompt = (
+                f"Schema: {SCHEMA_HINT}\n\nQuestion: {question}\n\n"
+                "Reply with exactly one line: the SQLite SELECT query only."
+            )
 
         start = time.perf_counter()
         error = None
@@ -201,18 +222,18 @@ class OpenRouterLLMClient:
             text = self._chat(
                 messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                 temperature=0.0,
-                max_tokens=240,
+                max_tokens=200,
             )
             sql = self._extract_sql(text)
             if sql is None and not conversation:
                 strict_prompt = (
-                    f"Question: {question}. Schema: {SCHEMA_HINT} "
-                    "Return only one line: the SQLite SELECT query. No explanation."
+                    f"Schema: {SCHEMA_HINT}\n\nQuestion: {question}\n\n"
+                    "One line only: the SQLite SELECT query."
                 )
                 text = self._chat(
-                    messages=[{"role": "system", "content": "You are a SQL assistant. Return only the SQL query."}, {"role": "user", "content": strict_prompt}],
+                    messages=[{"role": "system", "content": "Reply with only the SQL query, one line."}, {"role": "user", "content": strict_prompt}],
                     temperature=0.0,
-                    max_tokens=240,
+                    max_tokens=200,
                 )
                 sql = self._extract_sql(text)
         except Exception as exc:
@@ -257,7 +278,7 @@ class OpenRouterLLMClient:
         )
         user_prompt = (
             f"Question:\n{question}\n\nSQL:\n{sql}\n\n"
-            f"Rows (JSON):\n{json.dumps(rows[:30], ensure_ascii=True)}\n\n"
+            f"Rows (JSON):\n{json.dumps(rows[:20], ensure_ascii=True)}\n\n"
             "Write a concise answer in plain English."
         )
         if conversation_context and conversation_context.turns:
@@ -279,7 +300,7 @@ class OpenRouterLLMClient:
             answer = self._chat(
                 messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                 temperature=0.2,
-                max_tokens=220,
+                max_tokens=180,
             )
         except Exception as exc:
             error = str(exc)

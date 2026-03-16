@@ -142,20 +142,28 @@ No metrics/tracing backend; no answer-quality or result-consistency checks; no r
 
 Include your before/after benchmark results here.
 
-**Baseline (if you measured):**
-- Average latency: `~2900 ms` (per README reference)
+**Baseline (README reference):**
+- Average latency: `~2900 ms`
 - p50 latency: `~2500 ms`
 - p95 latency: `~4700 ms`
-- Success rate: `_%` (run benchmark to fill)
+- Success rate: (not measured)
+- ~600 tokens/request
 
-**Your solution:**
-- Average latency: `___ ms` (run: `python3 scripts/benchmark.py --runs 3`)
+**Your solution (measured, before improvements):**
+- Average latency: `8078 ms` / `14571 ms` (two runs)
+- p50 latency: `7053 ms` / `15506 ms`
+- p95 latency: `15349 ms` / `23892 ms`
+- Success rate: `16.7%` / `19.4%`
+- Average tokens per request: `372` / `664`
+- Average LLM calls per request: `1.17` / `1.64`
+
+**Your solution (after improvements below):**
+- Run `python3 scripts/benchmark.py --runs 3` and fill:
+- Average latency: `___ ms`
 - p50 latency: `___ ms`
 - p95 latency: `___ ms`
 - Success rate: `___ %`
-
-**LLM efficiency:**
-- Average tokens per request: `___` (from benchmark or total_llm_stats)
+- Average tokens per request: `___`
 - Average LLM calls per request: `___`
 
 ---

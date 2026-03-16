@@ -97,7 +97,7 @@ cp .env.example .env
 # Edit .env and set OPENROUTER_API_KEY=<your_key>
 ```
 
-Optional: set `OPENROUTER_MODEL` in `.env` to override the default model. See `.env.example` for all supported variables.
+Optional: set `OPENROUTER_MODEL` in `.env` to override the default model. See `.env.example` for all supported variables. If `test_answerable_prompt_returns_sql_and_answer` fails (model returns no parseable SQL), try a different model that returns plain text in the API `content` field.
 
 ## Benchmark
 Run:
