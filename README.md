@@ -84,17 +84,20 @@ python3 -m unittest discover -s tests -p "test_public.py"
 
 This project uses [OpenRouter](https://openrouter.ai/) to access LLMs for SQL generation and answer synthesis. OpenRouter provides a unified API for many models across providers. It offers a **free tier** that lets you use certain models at no cost, which is sufficient for this assignment.
 
+All environment variables are loaded from a **`.env`** file in the project root. The pipeline, scripts, and tests load this file automatically.
+
 To get started:
 
 1. **Create an account** at [openrouter.ai](https://openrouter.ai/)
 2. **Create an API key** in your account settings
-3. **Set the API key** in your environment (or copy from `.env.example`):
+3. **Copy the sample env file and add your key:**
 
 ```bash
-set OPENROUTER_API_KEY=<your_key>
+cp .env.example .env
+# Edit .env and set OPENROUTER_API_KEY=<your_key>
 ```
 
-On Linux/macOS: `export OPENROUTER_API_KEY=<your_key>`
+Optional: set `OPENROUTER_MODEL` in `.env` to override the default model. See `.env.example` for all supported variables.
 
 ## Benchmark
 Run:
@@ -135,6 +138,8 @@ The current pipeline handles single, isolated questions. In real-world scenarios
 - You may implement this however you see fit: extend the existing pipeline, add new modules, or integrate directly into the LLM client.
 - No skeleton code or boilerplate is provided - design the solution architecture yourself.
 - If implemented, document your approach in `CHECKLIST.md` under a "Follow-Up Questions" section.
+
+**This repo includes an implementation:** use `ConversationPipeline` for multi-turn Q&A (context is kept across turns). Example: `from src import ConversationPipeline; cp = ConversationPipeline(); cp.ask("..."); cp.ask("What about males?")`. Run the demo: `PYTHONPATH=. python3 scripts/conversation_demo.py`.
 
 ## General Notes
 - The baseline intentionally leaves room for substantial optimization.

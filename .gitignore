@@ -1,0 +1,23 @@
+# Environment (contains secrets; use .env.example as template)
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.so
+.venv/
+venv/
+env/
+
+# IDE / OS
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# Data (large CSV; DB can be regenerated)
+# Uncomment if you don't want to track data:
+# data/*.csv
+# data/*.sqlite

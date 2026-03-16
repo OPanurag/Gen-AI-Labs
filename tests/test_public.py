@@ -9,6 +9,10 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+# Load .env from project root (single source for OPENROUTER_*, etc.)
+from dotenv import load_dotenv
+load_dotenv(dotenv_path=BACKEND_ROOT / ".env")
+
 from src.pipeline import AnalyticsPipeline
 from scripts.gaming_csv_to_db import csv_to_sqlite
 from scripts.gaming_csv_to_db import DEFAULT_CSV_PATH, DEFAULT_DB_PATH, DEFAULT_TABLE_NAME
