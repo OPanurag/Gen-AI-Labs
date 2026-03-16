@@ -112,7 +112,8 @@ class OpenRouterLLMClient:
         raw = text.strip()
         # Prose triggers: truncate SQL here (model often appends explanation)
         _PROSE_TRIGGERS = _re.compile(
-            r"\s+(using|sqlite|query|this\s+query|to\s+get|to\s+find|to\s+return|on\s+the|we\s+get|you\s+can)\b",
+            r"\s+(using|sqlite|query|this\s+query|to\s+get|to\s+find|to\s+return|on\s+the|we\s+get|you\s+can|"
+            r"only\b|addresses\b|to\s+answer|to\s+show|to\b)",
             _re.IGNORECASE,
         )
 

@@ -20,8 +20,25 @@ from scripts.gaming_csv_to_db import DEFAULT_CSV_PATH, DEFAULT_DB_PATH, DEFAULT_
 
 
 def _ensure_gaming_db() -> Path:
-    """Ensure gaming mental health DB exists; create from CSV if missing."""
-    if not DEFAULT_DB_PATH.exists():
+    """Ensure gaming mental health DB exists and is valid; create from CSV if missing or invalid."""
+    import sqlite3
+    need_rebuild = not DEFAULT_DB_PATH.exists()
+    if not need_rebuild:
+        try:
+            with sqlite3.connect(DEFAULT_DB_PATH) as conn:
+                conn.execute("SELECT 1")
+        except sqlite3.OperationalError as e:
+            if "not a database" in str(e).lower() or "corrupt" in str(e).lower():
+                need_rebuild = True
+                DEFAULT_DB_PATH.unlink(missing_ok=True)
+            else:
+                raise
+    if need_rebuild:
+        if not DEFAULT_CSV_PATH.exists():
+            raise FileNotFoundError(
+                f"Database missing or invalid and CSV not found at {DEFAULT_CSV_PATH}. "
+                "Download the dataset from Kaggle and place it in data/."
+            )
         csv_to_sqlite(DEFAULT_CSV_PATH, DEFAULT_DB_PATH, DEFAULT_TABLE_NAME, if_exists="replace")
     return DEFAULT_DB_PATH
 

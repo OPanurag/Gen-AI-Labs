@@ -109,6 +109,19 @@ def csv_to_sqlite(
     # Create data directory if it doesn't exist
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # If replacing, remove existing file so we get a valid new DB (handles "file is not a database")
+    if if_exists == "replace" and db_path.exists():
+        db_path.unlink(missing_ok=True)
+    elif db_path.exists():
+        # If not replacing, check existing file is a valid SQLite DB
+        try:
+            with sqlite3.connect(db_path) as check_conn:
+                check_conn.execute("SELECT 1")
+        except sqlite3.OperationalError as e:
+            if "not a database" in str(e).lower() or "corrupt" in str(e).lower():
+                print(f"Removing invalid or corrupt database file: {db_path}")
+                db_path.unlink(missing_ok=True)
+
     print(f"Connecting to database at: {db_path}")
     conn = sqlite3.connect(db_path)
 
