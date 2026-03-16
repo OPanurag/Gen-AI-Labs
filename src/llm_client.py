@@ -110,12 +110,25 @@ class OpenRouterLLMClient:
     def _extract_sql(text: str) -> str | None:
         import re as _re
         raw = text.strip()
+        # Prose triggers: truncate SQL here (model often appends explanation)
+        _PROSE_TRIGGERS = _re.compile(
+            r"\s+(using|sqlite|query|this\s+query|to\s+get|to\s+find|to\s+return|on\s+the|we\s+get|you\s+can)\b",
+            _re.IGNORECASE,
+        )
+
+        def _strip_trailing_prose(segment: str) -> str:
+            segment = segment.split(";")[0].strip()
+            if ". " in segment:
+                segment = segment.split(". ")[0].strip()
+            m = _PROSE_TRIGGERS.search(segment)
+            if m:
+                segment = segment[: m.start()].strip()
+            return segment
+
         # Fast path: single-line response starting with SELECT (model obeyed "one line only")
         if raw and "\n" not in raw and raw.upper().startswith("SELECT"):
-            seg = raw.split(";")[0].strip()
-            if ". " in seg:
-                seg = seg.split(". ")[0].strip()
-            return seg or None
+            seg = _strip_trailing_prose(raw)
+            return seg if seg and seg.upper().startswith("SELECT") else None
         # Try JSON with "sql" key first
         if raw.startswith("{") and raw.endswith("}"):
             try:
@@ -133,20 +146,15 @@ class OpenRouterLLMClient:
         ):
             match = pattern.search(raw)
             if match:
-                block = match.group(1).strip().split(";")[0].strip()
-                if ". " in block:
-                    block = block.split(". ")[0].strip()
+                block = _strip_trailing_prose(match.group(1).strip())
                 if block.upper().startswith("SELECT"):
                     return block
                 sel = _re.search(r"\bSELECT\b", block, _re.IGNORECASE)
                 if sel:
-                    return block[sel.start() :].strip()
+                    return _strip_trailing_prose(block[sel.start() :])
         def _clean_segment(segment: str) -> str | None:
-            segment = segment.split(";")[0].strip()
+            segment = _strip_trailing_prose(segment)
             segment = segment.split("\n\n")[0].strip()
-            # Strip trailing prose: "SELECT ... . This gives us" -> "SELECT ..."
-            if ". " in segment:
-                segment = segment.split(". ")[0].strip()
             # Truncate at first dangerous keyword (whole word) so we never include it
             danger_match = _re.search(
                 r"\b(DELETE|DROP|UPDATE|INSERT|ALTER|TRUNCATE|CREATE)\b",
@@ -167,6 +175,7 @@ class OpenRouterLLMClient:
                 sel = _re.search(r"\bSELECT\b", segment, _re.IGNORECASE)
                 if sel:
                     segment = segment[sel.start() :].strip()
+            segment = _strip_trailing_prose(segment)
             return segment if segment and segment.upper().startswith("SELECT") else None
 
         lower = raw.lower()
