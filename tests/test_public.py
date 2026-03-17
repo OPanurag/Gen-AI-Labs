@@ -32,7 +32,10 @@ def _ensure_gaming_db() -> Path:
     return DEFAULT_DB_PATH
 
 
-@unittest.skipUnless(os.getenv("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY is required for LLM integration tests.")
+@unittest.skipUnless(
+    os.getenv("GEMINI_API_KEY") or os.getenv("OPENROUTER_API_KEY"),
+    "GEMINI_API_KEY or OPENROUTER_API_KEY is required for LLM integration tests.",
+)
 class PublicPipelineTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

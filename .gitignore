@@ -18,6 +18,5 @@ env/
 *.swo
 
 # Data (large CSV; DB can be regenerated)
-# Uncomment if you don't want to track data:
-# data/*.csv
-# data/*.sqlite
+data/*.csv
+data/*.sqlite
