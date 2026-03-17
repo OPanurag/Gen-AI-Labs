@@ -17,6 +17,5 @@ env/
 *.swp
 *.swo
 
-# Data (large CSV; DB can be regenerated)
+# Data (large CSV; DB can be regenerated; SQLite is in Git LFS)
 data/*.csv
-data/*.sqlite
